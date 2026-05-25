@@ -9,8 +9,6 @@
   "mcps",
   "metrics",
   "observability",
-  "observability-overview",
-  "primitives",
   "processors",
   "prompts",
   "request-context",
@@ -20,6 +18,7 @@
   "signup",
   "templates",
   "tools",
+  "traces",
   "workflows",
   "workspaces"
 ]

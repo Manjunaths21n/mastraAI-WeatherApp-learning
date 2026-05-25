@@ -23,15 +23,13 @@ import { Tool, ToolHeader, ToolContent, ToolInput, ToolOutput } from '@/componen
 export default function App() {
   const [input, setInput] = React.useState<string>('')
 
-  const { messages, sendMessage, status } = useChat({
+  const { messages, sendMessage, status, error, stop } = useChat({
     transport: new DefaultChatTransport({
       api: 'http://localhost:4111/chat/weather-agent',
+      // api: 'http://localhost:4111/chat/dev',
     }),
   })
-  if (status === 'streaming' || messages.length > 0) {
-    console.log(messages)
-    debugger;
-  }
+
   const handleSubmit = async () => {
     if (!input.trim()) return
 
@@ -80,6 +78,15 @@ export default function App() {
                 })}
               </div>
             ))}
+            {error && (
+              <Message from="assistant">
+                <MessageContent className="bg-destructive/10 text-destructive border-destructive/20 border">
+                  <MessageResponse>
+                    {error.message || 'An unexpected error occurred. Please try again.'}
+                  </MessageResponse>
+                </MessageContent>
+              </Message>
+            )}
             <ConversationScrollButton />
           </ConversationContent>
         </Conversation>
@@ -95,7 +102,7 @@ export default function App() {
           </PromptInputBody>
           <PromptInputFooter>
             <div />
-            <PromptInputSubmit status={status} />
+            <PromptInputSubmit status={status} onStop={stop} />
           </PromptInputFooter>
         </PromptInput>
       </div>

@@ -1,6 +1,15 @@
 import { Agent } from '@mastra/core/agent';
 import { Memory } from '@mastra/memory';
 import { weatherTool } from '../tools/weather-tool';
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+
+const nvidiaProvider = createOpenAICompatible({
+  name: 'nvidia',
+  baseURL: 'https://integrate.api.nvidia.com/v1',
+  headers: {
+    Authorization: `Bearer ${process.env.GOOGLE_GENERATIVE_AI_API_KEY}`,
+  },
+});
 
 export const weatherAgent = new Agent({
   id: 'weather-agent',
@@ -19,9 +28,10 @@ export const weatherAgent = new Agent({
 
       Use the weatherTool to fetch current weather data.
 `,
-  // model: 'gemini-2.0-flash',
-  model: 'google/gemini-3-flash-preview',
+  model: nvidiaProvider.chatModel('meta/llama-3.3-70b-instruct'),
+  // model: 'google/gemini-3-flash-preview',
   tools: { weatherTool },
+
 
   memory: new Memory(),
 });

@@ -1,5 +1,4 @@
 import { scoreTraces, scoreTracesWorkflow } from '@mastra/core/evals/scoreTraces';
-import path, { join, resolve as resolve$2, dirname, extname, basename, isAbsolute, relative } from 'path';
 import { Mastra } from '@mastra/core/mastra';
 import { PinoLogger } from '@mastra/loggers';
 import { LibSQLStore } from '@mastra/libsql';
@@ -11,9 +10,11 @@ import { createWorkflow, createStep } from '@mastra/core/workflows';
 import z$2, { z } from 'zod';
 import { Agent, MessageList, isSupportedLanguageModel, tryGenerateWithJsonFallback, tryStreamWithJsonFallback } from '@mastra/core/agent';
 import { Memory as Memory$1 } from '@mastra/memory';
-import { weatherTool } from './tools/c931a01b-60d7-4ec4-9483-4ee26509aa06.mjs';
+import { weatherTool } from './tools/b33eeb52-f352-4328-af49-b64437a9c138.mjs';
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { mkdtemp, rm, readFile, writeFile, mkdir, copyFile, readdir, stat } from 'fs/promises';
 import * as https from 'https';
+import { join, resolve as resolve$2, dirname, extname, basename, isAbsolute, relative } from 'path';
 import { fileURLToPath } from 'url';
 import { createServer } from 'http';
 import { Http2ServerRequest, constants } from 'http2';
@@ -196,6 +197,13 @@ const weatherWorkflow = createWorkflow({
 }).then(fetchWeather).then(planActivities);
 weatherWorkflow.commit();
 
+const nvidiaProvider = createOpenAICompatible({
+  name: "nvidia",
+  baseURL: "https://integrate.api.nvidia.com/v1",
+  headers: {
+    Authorization: `Bearer ${process.env.GOOGLE_GENERATIVE_AI_API_KEY}`
+  }
+});
 const weatherAgent = new Agent({
   id: "weather-agent",
   name: "Weather Agent",
@@ -213,11 +221,47 @@ const weatherAgent = new Agent({
 
       Use the weatherTool to fetch current weather data.
 `,
-  // model: 'gemini-2.0-flash',
-  model: "google/gemini-3-flash-preview",
+  model: nvidiaProvider.chatModel("meta/llama-3.3-70b-instruct"),
+  // model: 'google/gemini-3-flash-preview',
   tools: { weatherTool },
   memory: new Memory$1()
 });
+
+const devResponser = async (input) => {
+  const lowerInput = input.toLowerCase();
+  if (lowerInput.includes("weather") || lowerInput.includes("temperature")) {
+    const words = input.split(" ");
+    const inIndex = words.findIndex((w) => w.toLowerCase() === "in");
+    let location = "London";
+    if (inIndex !== -1 && words[inIndex + 1]) {
+      location = words[inIndex + 1].replace(/[?!.,]/g, "");
+    }
+    try {
+      const weatherData = await weatherTool.execute({
+        location
+      }, {
+        toolId: "get-weather",
+        toolName: "weatherTool",
+        runId: "dev-run"
+      });
+      const responseText = `[MOCK MODE] The current weather in ${weatherData.location} is ${weatherData.conditions.toLowerCase()}. The temperature is ${weatherData.temperature}\xB0C, but it feels like ${weatherData.feelsLike}\xB0C. Humidity is at ${weatherData.humidity}%.`;
+      return {
+        location,
+        weatherData,
+        responseText
+      };
+    } catch (error) {
+      return {
+        location,
+        error: error instanceof Error ? error.message : "Unknown error",
+        responseText: `[MOCK MODE ERROR] I tried to check the weather for ${location}, but I ran into an error.`
+      };
+    }
+  }
+  return {
+    responseText: "[MOCK MODE] I'm in Local Dev Mode to save your Gemini API quota. I can only help with weather queries right now (e.g., 'weather in London')."
+  };
+};
 
 const mastra = new Mastra({
   workflows: {
@@ -227,7 +271,72 @@ const mastra = new Mastra({
     weatherAgent
   },
   server: {
-    apiRoutes: [chatRoute({
+    apiRoutes: [{
+      path: "/chat/dev",
+      method: "POST",
+      handler: async ({
+        body
+      }) => {
+        console.log("HIT /chat/dev handler");
+        try {
+          const {
+            messages
+          } = body;
+          if (!messages || !messages.length) {
+            return new Response(JSON.stringify({
+              error: "No messages provided"
+            }), {
+              status: 400,
+              headers: {
+                "Content-Type": "application/json"
+              }
+            });
+          }
+          const lastMessage = messages[messages.length - 1];
+          const result = await devResponser(lastMessage.content);
+          const parts = [];
+          if (result.weatherData || result.error) {
+            parts.push({
+              type: "tool-call",
+              toolName: "weatherTool",
+              state: result.error ? "output-error" : "output-available",
+              input: {
+                location: result.location
+              },
+              output: result.weatherData,
+              errorText: result.error
+            });
+          }
+          parts.push({
+            type: "text",
+            text: result.responseText
+          });
+          const responseBody = {
+            id: Date.now().toString(),
+            role: "assistant",
+            content: result.responseText,
+            parts
+          };
+          return new Response(JSON.stringify(responseBody), {
+            headers: {
+              "Content-Type": "application/json",
+              "Access-Control-Allow-Origin": "*"
+            }
+          });
+        } catch (err) {
+          console.error("DEV_HANDLER_ERROR:", err);
+          return new Response(JSON.stringify({
+            error: "Internal Server Error",
+            message: err instanceof Error ? err.message : String(err)
+          }), {
+            status: 500,
+            headers: {
+              "Content-Type": "application/json"
+            }
+          });
+        }
+      }
+    }, chatRoute({
       path: "/chat/:agentId"
     })]
   },
@@ -235,11 +344,11 @@ const mastra = new Mastra({
     id: "composite-storage",
     default: new LibSQLStore({
       id: "mastra-storage",
-      url: `file:${path.join(process.cwd(), "../../../../mastra-db/mastra.db")}`
+      url: `file:mastra.db`
     }),
     domains: {
       observability: await new DuckDBStore({
-        path: path.join(process.cwd(), "../../../../mastra-db/mastra.duckdb")
+        path: "mastra.duckdb"
       }).getStore("observability")
     }
   }),
@@ -251,16 +360,8 @@ const mastra = new Mastra({
     configs: {
       default: {
         serviceName: "mastra",
-        exporters: [
-          new DefaultExporter(),
-          // Persists traces to storage for Mastra Studio
-          new CloudExporter()
-          // Sends observability data to hosted Mastra Studio (if MASTRA_CLOUD_ACCESS_TOKEN is set)
-        ],
-        spanOutputProcessors: [
-          new SensitiveDataFilter()
-          // Redacts sensitive data like passwords, tokens, keys
-        ]
+        exporters: [new DefaultExporter(), new CloudExporter()],
+        spanOutputProcessors: [new SensitiveDataFilter()]
       }
     }
   })
